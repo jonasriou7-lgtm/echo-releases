@@ -55,14 +55,34 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          $exe = (Resolve-Path ".\build\Echo.exe").Path
           $result = Join-Path $env:TEMP "echo-self-test.txt"
           Remove-Item $result -Force -ErrorAction SilentlyContinue
-          & .\build\Echo.exe --self-test $result
-          if ($LASTEXITCODE -ne 0) { throw "Echo.exe self-test code $LASTEXITCODE" }
-          if (-not (Test-Path $result)) { throw "Self-test file missing." }
-          $text = Get-Content $result -Raw
-          if ($text -notlike "SELFTEST_OK*") { throw "Self-test failed: $text" }
-          Write-Host $text
+
+          # Echo.exe is a GUI subsystem application (/target:winexe).
+          # PowerShell's call operator can leave $LASTEXITCODE unset for GUI apps.
+          # Start-Process -Wait -PassThru gives us the real process exit code.
+          $proc = Start-Process `
+            -FilePath $exe `
+            -ArgumentList @("--self-test", "`"$result`"") `
+            -Wait `
+            -PassThru
+
+          if ($proc.ExitCode -ne 0) {
+            throw "Echo.exe self-test returned exit code $($proc.ExitCode)"
+          }
+
+          if (-not (Test-Path $result)) {
+            throw "Echo.exe self-test did not create its result file."
+          }
+
+          $text = (Get-Content $result -Raw).Trim()
+          if ($text -notlike "SELFTEST_OK*") {
+            throw "Echo.exe self-test failed: $text"
+          }
+
+          Write-Host "[OK] $text"
 
       - name: Optional Authenticode signing
         shell: powershell
