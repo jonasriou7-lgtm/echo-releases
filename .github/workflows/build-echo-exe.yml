@@ -1,0 +1,139 @@
+name: Build Echo.exe
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish/replace Echo.exe in launcher release"
+        required: true
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile Echo.exe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+
+          $cscCandidates = @(
+            "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+            "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          )
+          $csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $csc) { throw "csc.exe .NET Framework introuvable." }
+
+          & $csc `
+            /nologo `
+            /optimize+ `
+            /target:winexe `
+            /platform:anycpu `
+            /out:build\Echo.exe `
+            /win32manifest:launcher\app.manifest `
+            /reference:System.dll `
+            /reference:System.Core.dll `
+            /reference:System.Drawing.dll `
+            /reference:System.Windows.Forms.dll `
+            /reference:System.Web.Extensions.dll `
+            /reference:System.IO.Compression.dll `
+            /reference:System.IO.Compression.FileSystem.dll `
+            launcher\EchoLauncher.cs
+
+          if ($LASTEXITCODE -ne 0) { throw "Compilation Echo.exe échouée." }
+          if (-not (Test-Path build\Echo.exe)) { throw "Echo.exe absent après compilation." }
+
+      - name: Run binary self-test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $result = Join-Path $env:TEMP "echo-self-test.txt"
+          Remove-Item $result -Force -ErrorAction SilentlyContinue
+          & .\build\Echo.exe --self-test $result
+          if ($LASTEXITCODE -ne 0) { throw "Echo.exe self-test code $LASTEXITCODE" }
+          if (-not (Test-Path $result)) { throw "Self-test file missing." }
+          $text = Get-Content $result -Raw
+          if ($text -notlike "SELFTEST_OK*") { throw "Self-test failed: $text" }
+          Write-Host $text
+
+      - name: Optional Authenticode signing
+        shell: powershell
+        env:
+          ECHO_SIGN_PFX_BASE64: ${{ secrets.ECHO_SIGN_PFX_BASE64 }}
+          ECHO_SIGN_PFX_PASSWORD: ${{ secrets.ECHO_SIGN_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_BASE64)) {
+            Write-Warning "Aucun certificat de signature configuré : Echo.exe restera non signé."
+            exit 0
+          }
+
+          $pfx = Join-Path $env:TEMP "echo-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:ECHO_SIGN_PFX_BASE64))
+
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+
+          if (-not $signtool) { throw "signtool.exe introuvable." }
+
+          & $signtool sign /fd SHA256 /f $pfx /p $env:ECHO_SIGN_PFX_PASSWORD `
+            /tr http://timestamp.digicert.com /td SHA256 build\Echo.exe
+
+          if ($LASTEXITCODE -ne 0) { throw "Signature Authenticode échouée." }
+
+          & $signtool verify /pa /v build\Echo.exe
+          if ($LASTEXITCODE -ne 0) { throw "Vérification signature échouée." }
+
+      - name: Generate hashes
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash build\Echo.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  Echo.exe" | Set-Content build\Echo.exe.sha256.txt -Encoding ascii
+          @{
+            launcher_version = "1.0.0"
+            manifest_url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/latest/download/echo-update.json"
+            sha256 = $hash
+            built_at = (Get-Date).ToUniversalTime().ToString("o")
+          } | ConvertTo-Json | Set-Content build\echo-launcher-info.json -Encoding UTF8
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Echo-Universal-Launcher
+          path: |
+            build/Echo.exe
+            build/Echo.exe.sha256.txt
+            build/echo-launcher-info.json
+
+      - name: Publish launcher release
+        if: ${{ inputs.publish == 'true' }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "echo-launcher-v1.0.0"
+
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag `
+              --repo "${{ github.repository }}" `
+              --title "Echo Universal Launcher 1.0.0" `
+              --notes "Echo.exe universal: installation, update check, prerequisites, Ollama/model, launch."
+          }
+
+          gh release upload $tag `
+            build\Echo.exe `
+            build\Echo.exe.sha256.txt `
+            build\echo-launcher-info.json `
+            --repo "${{ github.repository }}" `
+            --clobber
