@@ -60,9 +60,6 @@ jobs:
           $result = Join-Path $env:TEMP "echo-self-test.txt"
           Remove-Item $result -Force -ErrorAction SilentlyContinue
 
-          # Echo.exe is a GUI subsystem application (/target:winexe).
-          # PowerShell's call operator can leave $LASTEXITCODE unset for GUI apps.
-          # Start-Process -Wait -PassThru gives us the real process exit code.
           $proc = Start-Process `
             -FilePath $exe `
             -ArgumentList @("--self-test", "`"$result`"") `
@@ -91,13 +88,17 @@ jobs:
           ECHO_SIGN_PFX_PASSWORD: ${{ secrets.ECHO_SIGN_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
+
           if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_BASE64)) {
             Write-Warning "Aucun certificat de signature configuré : Echo.exe restera non signé."
             exit 0
           }
 
           $pfx = Join-Path $env:TEMP "echo-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:ECHO_SIGN_PFX_BASE64))
+          [IO.File]::WriteAllBytes(
+            $pfx,
+            [Convert]::FromBase64String($env:ECHO_SIGN_PFX_BASE64)
+          )
 
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending |
@@ -116,8 +117,11 @@ jobs:
       - name: Generate hashes
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           $hash = (Get-FileHash build\Echo.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  Echo.exe" | Set-Content build\Echo.exe.sha256.txt -Encoding ascii
+
           @{
             launcher_version = "1.0.0"
             manifest_url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/latest/download/echo-update.json"
@@ -140,20 +144,47 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $ErrorActionPreference = "Stop"
+          $repo = "${{ github.repository }}"
           $tag = "echo-launcher-v1.0.0"
 
-          gh release view $tag --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag `
-              --repo "${{ github.repository }}" `
+          # IMPORTANT:
+          # `gh release view` returns a normal non-zero code when the release
+          # does not exist. Windows PowerShell 5 can turn native stderr into a
+          # terminating NativeCommandError when ErrorActionPreference = Stop.
+          # Treat the expected "not found" probe as non-fatal and inspect only
+          # the real process exit code.
+          $oldPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+
+          & gh release view $tag --repo $repo --json tagName *> $null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+
+          $ErrorActionPreference = $oldPreference
+
+          if (-not $releaseExists) {
+            Write-Host "[INFO] Release $tag absente : création."
+            & gh release create $tag `
+              --repo $repo `
               --title "Echo Universal Launcher 1.0.0" `
               --notes "Echo.exe universal: installation, update check, prerequisites, Ollama/model, launch."
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Création de la release launcher échouée (code $LASTEXITCODE)."
+            }
+          }
+          else {
+            Write-Host "[OK] Release $tag déjà présente."
           }
 
-          gh release upload $tag `
+          & gh release upload $tag `
             build\Echo.exe `
             build\Echo.exe.sha256.txt `
             build\echo-launcher-info.json `
-            --repo "${{ github.repository }}" `
+            --repo $repo `
             --clobber
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Upload des fichiers Echo.exe échoué (code $LASTEXITCODE)."
+          }
+
+          Write-Host "[OK] Echo.exe publié sur la release $tag."
