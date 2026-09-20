@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -17,8 +17,8 @@ namespace EchoUniversalLauncher
 {
     internal static class Program
     {
-        internal const string LauncherVersion = "1.0.0";
-        internal const string ManifestUrl = "https://github.com/jonasriou7-lgtm/echo-releases/releases/latest/download/echo-update.json";
+        internal const string LauncherVersion = "1.0.2";
+        internal const string ManifestUrl = "https://github.com/jonasriou7-lgtm/echo-releases/releases/download/echo-stable/echo-update.json";
         internal static readonly string EchoRoot = @"C:\echo";
         internal static readonly string ProgramDataRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Echo"
@@ -27,12 +27,14 @@ namespace EchoUniversalLauncher
         [STAThread]
         private static void Main(string[] args)
         {
+            // GitHub requires TLS 1.2.
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
             bool created;
             using (Mutex mutex = new Mutex(true, "EchoUniversalLauncherMutex", out created))
             {
                 if (!created)
                 {
-                    MessageBox.Show("Écho est déjà en cours de lancement.", "Écho",
+                    MessageBox.Show("Ã‰cho est dÃ©jÃ  en cours de lancement.", "Ã‰cho",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
@@ -103,7 +105,7 @@ namespace EchoUniversalLauncher
         {
             launchArgs = args ?? new string[0];
 
-            Text = "Écho";
+            Text = "Ã‰cho";
             StartPosition = FormStartPosition.CenterScreen;
             Width = 820;
             Height = 560;
@@ -112,7 +114,7 @@ namespace EchoUniversalLauncher
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 10f);
 
-            title.Text = "ÉCHO";
+            title.Text = "Ã‰CHO";
             title.Font = new Font("Segoe UI Semilight", 28f);
             title.ForeColor = Color.FromArgb(220, 238, 255);
             title.AutoSize = true;
@@ -120,7 +122,7 @@ namespace EchoUniversalLauncher
             title.Top = 20;
             Controls.Add(title);
 
-            status.Text = "Initialisation…";
+            status.Text = "Initialisationâ€¦";
             status.Font = new Font("Segoe UI", 11f);
             status.ForeColor = Color.FromArgb(130, 206, 255);
             status.AutoSize = true;
@@ -175,7 +177,7 @@ namespace EchoUniversalLauncher
         {
             try
             {
-                UiStatus("Vérification d'Écho…", 5);
+                UiStatus("VÃ©rification d'Ã‰choâ€¦", 5);
                 Log("Echo.exe " + Program.LauncherVersion);
                 Log("Canal : " + Program.ManifestUrl);
 
@@ -200,7 +202,7 @@ namespace EchoUniversalLauncher
                 {
                     if (hasLocal)
                     {
-                        UiStatus("Hors ligne — lancement de la version locale", 85);
+                        UiStatus("Hors ligne â€” lancement de la version locale", 85);
                         Log("[OK] Version locale : " + (String.IsNullOrWhiteSpace(installed) ? "inconnue" : installed));
                         LaunchEcho();
                         FinishAndClose();
@@ -220,23 +222,23 @@ namespace EchoUniversalLauncher
                 {
                     if (!IsAdministrator())
                     {
-                        UiStatus("Autorisation Windows nécessaire…", 10);
-                        Log("[INFO] Installation/mise à jour : demande des droits administrateur.");
+                        UiStatus("Autorisation Windows nÃ©cessaireâ€¦", 10);
+                        Log("[INFO] Installation/mise Ã  jour : demande des droits administrateur.");
                         RelaunchElevated();
                         return;
                     }
 
-                    UiStatus(hasLocal ? "Mise à jour d'Écho…" : "Premier lancement — installation d'Écho…", 12);
+                    UiStatus(hasLocal ? "Mise Ã  jour d'Ã‰choâ€¦" : "Premier lancement â€” installation d'Ã‰choâ€¦", 12);
                     InstallOrUpdate(latest);
                     installed = latest.Version;
                 }
                 else
                 {
-                    Log("[OK] Écho est déjà à jour : " + installed);
-                    UiStatus("Écho est à jour", 82);
+                    Log("[OK] Ã‰cho est dÃ©jÃ  Ã  jour : " + installed);
+                    UiStatus("Ã‰cho est Ã  jour", 82);
                 }
 
-                UiStatus("Lancement d'Écho…", 92);
+                UiStatus("Lancement d'Ã‰choâ€¦", 92);
                 LaunchEcho();
                 FinishAndClose();
             }
@@ -257,7 +259,7 @@ namespace EchoUniversalLauncher
 
         private void InstallOrUpdate(ManifestInfo latest)
         {
-            UiStatus("Vérification des prérequis…", 15);
+            UiStatus("VÃ©rification des prÃ©requisâ€¦", 15);
 
             string python = EnsurePython();
             Log("[OK] Python : " + python);
@@ -278,28 +280,28 @@ namespace EchoUniversalLauncher
             try
             {
                 string zip = Path.Combine(temp, "EchoApp.zip");
-                UiStatus("Téléchargement d'Écho " + latest.Version + "…", 22);
+                UiStatus("TÃ©lÃ©chargement d'Ã‰cho " + latest.Version + "â€¦", 22);
                 DownloadFile(latest.PackageUrl, zip, latest.PackageSize, 22, 42);
 
                 string actual = Sha256(zip);
                 if (!String.Equals(actual, latest.PackageSha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException(
-                        "SHA-256 incorrect. Le package ne sera pas installé."
+                        "SHA-256 incorrect. Le package ne sera pas installÃ©."
                     );
-                Log("[OK] SHA-256 validé.");
+                Log("[OK] SHA-256 validÃ©.");
 
                 string extracted = Path.Combine(temp, "extracted");
                 Directory.CreateDirectory(extracted);
-                UiStatus("Validation du package…", 45);
+                UiStatus("Validation du packageâ€¦", 45);
                 SafeExtract(zip, extracted);
 
                 string payload = Path.Combine(extracted, "payload");
                 ValidatePayload(payload);
-                Log("[OK] Package complet et sûr.");
+                Log("[OK] Package complet et sÃ»r.");
 
                 StopEchoProcesses();
 
-                UiStatus("Préparation de la mise à jour…", 50);
+                UiStatus("PrÃ©paration de la mise Ã  jourâ€¦", 50);
                 oldNodeModules = QuarantineNodeModules();
 
                 Directory.CreateDirectory(Program.EchoRoot);
@@ -309,14 +311,14 @@ namespace EchoUniversalLauncher
 
                 plan = PrepareBackup(payload, backups);
 
-                UiStatus("Installation des fichiers…", 56);
+                UiStatus("Installation des fichiersâ€¦", 56);
                 CopyPayload(payload);
-                Log("[OK] Fichiers Écho installés.");
+                Log("[OK] Fichiers Ã‰cho installÃ©s.");
 
-                UiStatus("Installation des dépendances…", 64);
+                UiStatus("Installation des dÃ©pendancesâ€¦", 64);
                 InstallNodeDependencies(node);
 
-                UiStatus("Vérification de l'interface…", 70);
+                UiStatus("VÃ©rification de l'interfaceâ€¦", 70);
                 RunProcess(
                     node.NodeExe,
                     Quote(node.NpmCliJs) + " run build",
@@ -325,9 +327,9 @@ namespace EchoUniversalLauncher
                     true,
                     BuildNpmEnvironment(node.NodeExe)
                 );
-                Log("[OK] Build interface validé.");
+                Log("[OK] Build interface validÃ©.");
 
-                UiStatus("Dépendances Python…", 74);
+                UiStatus("DÃ©pendances Pythonâ€¦", 74);
                 InstallPythonDependencies(python);
                 ValidatePython(python);
 
@@ -337,21 +339,21 @@ namespace EchoUniversalLauncher
                     new UTF8Encoding(false)
                 );
 
-                UiStatus("Vérification du modèle IA…", 80);
+                UiStatus("VÃ©rification du modÃ¨le IAâ€¦", 80);
                 EnsureOllamaModel(ollama);
 
                 if (!String.IsNullOrWhiteSpace(oldNodeModules) && Directory.Exists(oldNodeModules))
                 {
                     try { Directory.Delete(oldNodeModules, true); }
-                    catch { Log("[INFO] Ancien node_modules conservé en sauvegarde : " + oldNodeModules); }
+                    catch { Log("[INFO] Ancien node_modules conservÃ© en sauvegarde : " + oldNodeModules); }
                 }
 
                 WriteState(latest.Version);
-                Log("[OK] Écho " + latest.Version + " installé.");
+                Log("[OK] Ã‰cho " + latest.Version + " installÃ©.");
             }
             catch
             {
-                Log("[ROLLBACK] Restauration de la version précédente…");
+                Log("[ROLLBACK] Restauration de la version prÃ©cÃ©denteâ€¦");
                 try { StopEchoProcesses(); } catch { }
 
                 try
@@ -376,7 +378,7 @@ namespace EchoUniversalLauncher
                         Directory.CreateDirectory(Path.GetDirectoryName(nm));
                         if (!Directory.Exists(nm))
                             Directory.Move(oldNodeModules, nm);
-                        Log("[ROLLBACK] Ancien node_modules restauré.");
+                        Log("[ROLLBACK] Ancien node_modules restaurÃ©.");
                     }
                     catch (Exception rex)
                     {
@@ -399,7 +401,9 @@ namespace EchoUniversalLauncher
                 wc.Headers[HttpRequestHeader.UserAgent] = "EchoUniversalLauncher/" + Program.LauncherVersion;
                 wc.Headers[HttpRequestHeader.CacheControl] = "no-cache";
                 string url = Program.ManifestUrl + "?launcher=" + DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                string json = wc.DownloadString(url);
+                byte[] manifestBytes = wc.DownloadData(url);
+                string json = Encoding.UTF8.GetString(manifestBytes);
+                json = json.TrimStart('\uFEFF');
 
                 JavaScriptSerializer js = new JavaScriptSerializer();
                 Dictionary<string, object> root = js.Deserialize<Dictionary<string, object>>(json);
@@ -486,7 +490,7 @@ namespace EchoUniversalLauncher
             long actual = new FileInfo(dst).Length;
             if (expectedSize > 0 && actual != expectedSize)
                 throw new InvalidOperationException(
-                    "Taille téléchargée incorrecte : " + actual + " / " + expectedSize
+                    "Taille tÃ©lÃ©chargÃ©e incorrecte : " + actual + " / " + expectedSize
                 );
         }
 
@@ -594,7 +598,7 @@ namespace EchoUniversalLauncher
                 string rel = RelativePath(payload, src);
                 if (IsProtected(rel))
                 {
-                    Log("[INFO] Donnée protégée conservée : " + rel);
+                    Log("[INFO] DonnÃ©e protÃ©gÃ©e conservÃ©e : " + rel);
                     continue;
                 }
 
@@ -671,13 +675,13 @@ namespace EchoUniversalLauncher
                 try
                 {
                     Directory.Move(nm, target);
-                    Log("[OK] Ancien node_modules sauvegardé : " + target);
+                    Log("[OK] Ancien node_modules sauvegardÃ© : " + target);
                     return target;
                 }
                 catch (Exception ex)
                 {
                     last = ex;
-                    Log("[INFO] node_modules verrouillé, tentative " + i + "/10 : " + ex.Message);
+                    Log("[INFO] node_modules verrouillÃ©, tentative " + i + "/10 : " + ex.Message);
                     if (i == 3 || i == 6 || i == 9)
                         StopEchoProcesses();
                     Thread.Sleep(1000);
@@ -685,7 +689,7 @@ namespace EchoUniversalLauncher
             }
 
             throw new InvalidOperationException(
-                "Impossible de libérer node_modules. Redémarre Windows puis relance Echo.exe. " +
+                "Impossible de libÃ©rer node_modules. RedÃ©marre Windows puis relance Echo.exe. " +
                 (last != null ? last.Message : "")
             );
         }
@@ -700,7 +704,7 @@ namespace EchoUniversalLauncher
 
             Dictionary<string, string> env = BuildNpmEnvironment(node.NodeExe);
 
-            UiStatus("npm install…", 65);
+            UiStatus("npm installâ€¦", 65);
             RunProcess(
                 node.NodeExe,
                 Quote(node.NpmCliJs) + " install --legacy-peer-deps --no-audit --no-fund",
@@ -714,7 +718,7 @@ namespace EchoUniversalLauncher
             if (!File.Exists(vite))
                 throw new InvalidOperationException("npm install incomplet : vite.cmd absent.");
 
-            Log("[OK] Dépendances Node installées.");
+            Log("[OK] DÃ©pendances Node installÃ©es.");
         }
 
         private Dictionary<string, string> BuildNpmEnvironment(string nodeExe)
@@ -771,7 +775,7 @@ namespace EchoUniversalLauncher
 
             if (requirements == null)
             {
-                Log("[INFO] Aucun fichier requirements détecté.");
+                Log("[INFO] Aucun fichier requirements dÃ©tectÃ©.");
                 return;
             }
 
@@ -783,7 +787,7 @@ namespace EchoUniversalLauncher
                 true,
                 null
             );
-            Log("[OK] Dépendances Python installées.");
+            Log("[OK] DÃ©pendances Python installÃ©es.");
         }
 
         private void ValidatePython(string python)
@@ -806,7 +810,7 @@ namespace EchoUniversalLauncher
                     null
                 );
             }
-            Log("[OK] Tests Python critiques validés.");
+            Log("[OK] Tests Python critiques validÃ©s.");
         }
 
         private string EnsurePython()
@@ -818,7 +822,7 @@ namespace EchoUniversalLauncher
             InstallWinget("Python.Python.3.13");
             found = FindPython();
             if (found == null)
-                throw new InvalidOperationException("Python installé mais introuvable.");
+                throw new InvalidOperationException("Python installÃ© mais introuvable.");
             return found;
         }
 
@@ -859,7 +863,7 @@ namespace EchoUniversalLauncher
             InstallWinget("OpenJS.NodeJS.LTS");
             n = FindNode();
             if (n == null)
-                throw new InvalidOperationException("Node.js installé mais introuvable.");
+                throw new InvalidOperationException("Node.js installÃ© mais introuvable.");
             return n;
         }
 
@@ -897,7 +901,7 @@ namespace EchoUniversalLauncher
             InstallWinget("Ollama.Ollama");
             o = FindOllama();
             if (o == null)
-                throw new InvalidOperationException("Ollama installé mais introuvable.");
+                throw new InvalidOperationException("Ollama installÃ© mais introuvable.");
             return o;
         }
 
@@ -1014,14 +1018,14 @@ namespace EchoUniversalLauncher
             string model = "qwen3.5:9b-q4_K_M";
             if ((list.Output ?? "").IndexOf(model, StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                Log("[OK] Modèle Ollama déjà présent : " + model);
+                Log("[OK] ModÃ¨le Ollama dÃ©jÃ  prÃ©sent : " + model);
                 return;
             }
 
-            UiStatus("Premier lancement — téléchargement du modèle IA…", 84);
-            Log("[INFO] Téléchargement du modèle " + model + ". Cela peut prendre du temps.");
+            UiStatus("Premier lancement â€” tÃ©lÃ©chargement du modÃ¨le IAâ€¦", 84);
+            Log("[INFO] TÃ©lÃ©chargement du modÃ¨le " + model + ". Cela peut prendre du temps.");
             RunProcess(ollama, "pull " + model, null, 7200, true, null);
-            Log("[OK] Modèle Ollama installé.");
+            Log("[OK] ModÃ¨le Ollama installÃ©.");
         }
 
         private ProcessResult RunProcess(
@@ -1085,7 +1089,7 @@ namespace EchoUniversalLauncher
                 if (!p.WaitForExit(timeoutSeconds * 1000))
                 {
                     try { p.Kill(); } catch { }
-                    throw new TimeoutException(Path.GetFileName(file) + " a dépassé le délai maximum.");
+                    throw new TimeoutException(Path.GetFileName(file) + " a dÃ©passÃ© le dÃ©lai maximum.");
                 }
 
                 p.WaitForExit();
@@ -1093,7 +1097,7 @@ namespace EchoUniversalLauncher
                 ProcessResult result = new ProcessResult(p.ExitCode, output.ToString());
                 if (failOnError && result.ExitCode != 0)
                     throw new InvalidOperationException(
-                        Path.GetFileName(file) + " a échoué (code " + result.ExitCode + ")."
+                        Path.GetFileName(file) + " a Ã©chouÃ© (code " + result.ExitCode + ")."
                     );
                 return result;
             }
@@ -1124,7 +1128,7 @@ namespace EchoUniversalLauncher
             }
             catch (Exception ex)
             {
-                Log("[INFO] Arrêt processus Écho : " + ex.Message);
+                Log("[INFO] ArrÃªt processus Ã‰cho : " + ex.Message);
             }
         }
 
@@ -1164,7 +1168,7 @@ namespace EchoUniversalLauncher
         {
             string python = FindPython();
             if (python == null)
-                throw new InvalidOperationException("Python est introuvable pour lancer Écho.");
+                throw new InvalidOperationException("Python est introuvable pour lancer Ã‰cho.");
 
             string entry = Path.Combine(Program.EchoRoot, "interface.py");
             if (!File.Exists(entry))
@@ -1180,12 +1184,12 @@ namespace EchoUniversalLauncher
             psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
             Process.Start(psi);
 
-            Log("[OK] Écho lancé.");
+            Log("[OK] Ã‰cho lancÃ©.");
         }
 
         private void FinishAndClose()
         {
-            UiStatus("Écho est lancé", 100);
+            UiStatus("Ã‰cho est lancÃ©", 100);
             Thread.Sleep(900);
             if (IsHandleCreated)
                 BeginInvoke((Action)delegate { Close(); });
@@ -1264,7 +1268,7 @@ namespace EchoUniversalLauncher
             catch (System.ComponentModel.Win32Exception ex)
             {
                 throw new InvalidOperationException(
-                    "L'autorisation administrateur a été refusée. " + ex.Message
+                    "L'autorisation administrateur a Ã©tÃ© refusÃ©e. " + ex.Message
                 );
             }
         }
@@ -1339,7 +1343,7 @@ namespace EchoUniversalLauncher
                 MessageBox.Show(
                     message + Environment.NewLine + Environment.NewLine +
                     "Journal : " + logFile,
-                    "Écho — erreur",
+                    "Ã‰cho â€” erreur",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
                 );
@@ -1399,3 +1403,4 @@ namespace EchoUniversalLauncher
         }
     }
 }
+

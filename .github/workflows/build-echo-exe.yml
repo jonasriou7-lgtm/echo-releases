@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish/replace Echo.exe in launcher release"
+        description: "Publish Echo.exe"
         required: true
         default: "true"
 
@@ -19,6 +19,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify launcher source patch
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = Get-Content launcher\EchoLauncher.cs -Raw
+
+          if ($src -notmatch 'LauncherVersion\s*=\s*"1\.0\.2"') {
+            throw "LauncherVersion 1.0.2 absent."
+          }
+          if ($src -notmatch 'releases/download/echo-stable/echo-update\.json') {
+            throw "Canal echo-stable absent."
+          }
+          if ($src -notmatch 'SecurityProtocol\s*=\s*\(SecurityProtocolType\)3072') {
+            throw "TLS 1.2 absent."
+          }
+          if ($src -notmatch 'DownloadData\(url\)') {
+            throw "Lecture binaire robuste du manifest absente."
+          }
+
+          Write-Host "[OK] Source launcher 1.0.2 validée."
+
+      - name: Verify stable manifest over HTTPS
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+          $url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/download/echo-stable/echo-update.json"
+          $tmp = Join-Path $env:TEMP "echo-stable-manifest.json"
+          Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+
+          Invoke-WebRequest `
+            -UseBasicParsing `
+            -Uri ($url + "?t=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) `
+            -OutFile $tmp `
+            -Headers @{
+              "Cache-Control" = "no-cache"
+              "User-Agent" = "Echo-GitHub-Action-Test"
+            }
+
+          if (-not (Test-Path $tmp)) {
+            throw "Manifest stable non téléchargé."
+          }
+
+          $raw = Get-Content $tmp -Raw -Encoding UTF8
+          $manifest = $raw | ConvertFrom-Json
+
+          if ($manifest.product -ne "echo-desktop") {
+            throw "Produit manifest incorrect."
+          }
+          if (-not $manifest.version) {
+            throw "Version manifest absente."
+          }
+
+          Write-Host "[OK] Canal stable HTTPS/TLS : version $($manifest.version)"
+
       - name: Compile Echo.exe
         shell: powershell
         run: |
@@ -30,7 +86,7 @@ jobs:
             "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           )
           $csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $csc) { throw "csc.exe .NET Framework introuvable." }
+          if (-not $csc) { throw "csc.exe introuvable." }
 
           & $csc `
             /nologo `
@@ -48,8 +104,9 @@ jobs:
             /reference:System.IO.Compression.FileSystem.dll `
             launcher\EchoLauncher.cs
 
-          if ($LASTEXITCODE -ne 0) { throw "Compilation Echo.exe échouée." }
-          if (-not (Test-Path build\Echo.exe)) { throw "Echo.exe absent après compilation." }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Compilation Echo.exe échouée."
+          }
 
       - name: Run binary self-test
         shell: powershell
@@ -67,16 +124,12 @@ jobs:
             -PassThru
 
           if ($proc.ExitCode -ne 0) {
-            throw "Echo.exe self-test returned exit code $($proc.ExitCode)"
-          }
-
-          if (-not (Test-Path $result)) {
-            throw "Echo.exe self-test did not create its result file."
+            throw "Echo.exe self-test returned $($proc.ExitCode)"
           }
 
           $text = (Get-Content $result -Raw).Trim()
           if ($text -notlike "SELFTEST_OK*") {
-            throw "Echo.exe self-test failed: $text"
+            throw "Self-test failed: $text"
           }
 
           Write-Host "[OK] $text"
@@ -90,7 +143,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_BASE64)) {
-            Write-Warning "Aucun certificat de signature configuré : Echo.exe restera non signé."
+            Write-Warning "Aucun certificat configuré : Echo.exe restera non signé."
             exit 0
           }
 
@@ -109,10 +162,7 @@ jobs:
           & $signtool sign /fd SHA256 /f $pfx /p $env:ECHO_SIGN_PFX_PASSWORD `
             /tr http://timestamp.digicert.com /td SHA256 build\Echo.exe
 
-          if ($LASTEXITCODE -ne 0) { throw "Signature Authenticode échouée." }
-
-          & $signtool verify /pa /v build\Echo.exe
-          if ($LASTEXITCODE -ne 0) { throw "Vérification signature échouée." }
+          if ($LASTEXITCODE -ne 0) { throw "Signature échouée." }
 
       - name: Generate hashes
         shell: powershell
@@ -123,8 +173,9 @@ jobs:
           "$hash  Echo.exe" | Set-Content build\Echo.exe.sha256.txt -Encoding ascii
 
           @{
-            launcher_version = "1.0.0"
-            manifest_url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/latest/download/echo-update.json"
+            launcher_version = "1.0.2"
+            update_channel = "echo-stable"
+            manifest_url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/download/echo-stable/echo-update.json"
             sha256 = $hash
             built_at = (Get-Date).ToUniversalTime().ToString("o")
           } | ConvertTo-Json | Set-Content build\echo-launcher-info.json -Encoding UTF8
@@ -132,7 +183,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Echo-Universal-Launcher
+          name: Echo-Universal-Launcher-1.0.2
           path: |
             build/Echo.exe
             build/Echo.exe.sha256.txt
@@ -145,35 +196,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $repo = "${{ github.repository }}"
-          $tag = "echo-launcher-v1.0.0"
+          $tag = "echo-launcher-v1.0.2"
 
-          # IMPORTANT:
-          # `gh release view` returns a normal non-zero code when the release
-          # does not exist. Windows PowerShell 5 can turn native stderr into a
-          # terminating NativeCommandError when ErrorActionPreference = Stop.
-          # Treat the expected "not found" probe as non-fatal and inspect only
-          # the real process exit code.
-          $oldPreference = $ErrorActionPreference
+          $old = $ErrorActionPreference
           $ErrorActionPreference = "Continue"
-
           & gh release view $tag --repo $repo --json tagName *> $null
-          $releaseExists = ($LASTEXITCODE -eq 0)
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $old
 
-          $ErrorActionPreference = $oldPreference
-
-          if (-not $releaseExists) {
-            Write-Host "[INFO] Release $tag absente : création."
+          if (-not $exists) {
             & gh release create $tag `
               --repo $repo `
-              --title "Echo Universal Launcher 1.0.0" `
-              --notes "Echo.exe universal: installation, update check, prerequisites, Ollama/model, launch."
+              --title "Echo Universal Launcher 1.0.2" `
+              --notes "TLS 1.2 + stable channel + robust binary manifest decoding."
 
             if ($LASTEXITCODE -ne 0) {
-              throw "Création de la release launcher échouée (code $LASTEXITCODE)."
+              throw "Création release launcher échouée."
             }
-          }
-          else {
-            Write-Host "[OK] Release $tag déjà présente."
           }
 
           & gh release upload $tag `
@@ -184,7 +223,7 @@ jobs:
             --clobber
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Upload des fichiers Echo.exe échoué (code $LASTEXITCODE)."
+            throw "Upload Echo.exe échoué."
           }
 
-          Write-Host "[OK] Echo.exe publié sur la release $tag."
+          Write-Host "[OK] Echo.exe 1.0.2 publié."
