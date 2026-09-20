@@ -134,35 +134,98 @@ jobs:
 
           Write-Host "[OK] $text"
 
-      - name: Optional Authenticode signing
+      - name: Authenticode signing
         shell: powershell
         env:
-          ECHO_SIGN_PFX_BASE64: ${{ secrets.ECHO_SIGN_PFX_BASE64 }}
+          ECHO_SIGN_PFX_HEX: ${{ secrets.ECHO_SIGN_PFX_HEX }}
           ECHO_SIGN_PFX_PASSWORD: ${{ secrets.ECHO_SIGN_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_BASE64)) {
-            Write-Warning "Aucun certificat configuré : Echo.exe restera non signé."
-            exit 0
+          if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_HEX)) {
+            throw "Secret ECHO_SIGN_PFX_HEX absent."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ECHO_SIGN_PFX_PASSWORD)) {
+            throw "Secret ECHO_SIGN_PFX_PASSWORD absent."
+          }
+
+          $hex = $env:ECHO_SIGN_PFX_HEX.Trim().TrimStart([char]0xFEFF)
+          $hex = ($hex -replace '\s', '')
+
+          if (($hex.Length % 2) -ne 0) {
+            throw "Secret PFX HEX de longueur impaire."
+          }
+          if ($hex -notmatch '^[0-9A-Fa-f]+$') {
+            throw "Secret PFX HEX contient des caractères invalides."
+          }
+
+          $bytes = New-Object byte[] ($hex.Length / 2)
+          for ($i = 0; $i -lt $hex.Length; $i += 2) {
+            $bytes[$i / 2] = [Convert]::ToByte($hex.Substring($i, 2), 16)
           }
 
           $pfx = Join-Path $env:TEMP "echo-signing.pfx"
-          [IO.File]::WriteAllBytes(
-            $pfx,
-            [Convert]::FromBase64String($env:ECHO_SIGN_PFX_BASE64)
-          )
+          [IO.File]::WriteAllBytes($pfx, $bytes)
+
+          if ((Get-Item $pfx).Length -lt 500) {
+            throw "PFX reconstruit anormalement petit."
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:ECHO_SIGN_PFX_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $imported = Import-PfxCertificate `
+            -FilePath $pfx `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -Password $securePassword `
+            -Exportable
+
+          $signingCert = $imported |
+            Where-Object { $_.HasPrivateKey } |
+            Select-Object -First 1
+
+          if (-not $signingCert) {
+            throw "Aucun certificat avec clé privée dans le PFX."
+          }
+
+          $cer = Join-Path $env:TEMP "echo-signing-public.cer"
+          Export-Certificate -Cert $signingCert -FilePath $cer -Force | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\CurrentUser\TrustedPublisher" | Out-Null
 
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending |
             Select-Object -First 1 -ExpandProperty FullName
 
-          if (-not $signtool) { throw "signtool.exe introuvable." }
+          if (-not $signtool) {
+            throw "signtool.exe introuvable."
+          }
 
-          & $signtool sign /fd SHA256 /f $pfx /p $env:ECHO_SIGN_PFX_PASSWORD `
-            /tr http://timestamp.digicert.com /td SHA256 build\Echo.exe
+          & $signtool sign `
+            /fd SHA256 `
+            /f $pfx `
+            /p $env:ECHO_SIGN_PFX_PASSWORD `
+            /tr https://timestamp.digicert.com `
+            /td SHA256 `
+            build\Echo.exe
 
-          if ($LASTEXITCODE -ne 0) { throw "Signature échouée." }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signature Authenticode échouée (code $LASTEXITCODE)."
+          }
+
+          $signature = Get-AuthenticodeSignature build\Echo.exe
+          if (-not $signature.SignerCertificate) {
+            throw "Echo.exe ne contient pas de certificat signataire."
+          }
+          if ($signature.Status -ne "Valid") {
+            throw "Signature Echo.exe non valide sur le runner : $($signature.Status)."
+          }
+
+          Write-Host "[OK] Echo.exe signé."
+          Write-Host "[OK] Signer : $($signature.SignerCertificate.Subject)"
+          Write-Host "[OK] Thumbprint : $($signature.SignerCertificate.Thumbprint)"
 
       - name: Generate hashes
         shell: powershell
