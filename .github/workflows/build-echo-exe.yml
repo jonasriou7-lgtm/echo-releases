@@ -14,6 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -35,20 +36,16 @@ jobs:
             throw "TLS 1.2 absent."
           }
           if ($src -notmatch 'DownloadData\(url\)') {
-            throw "Lecture binaire robuste du manifest absente."
+            throw "Lecture robuste du manifest absente."
           }
-
-          Write-Host "[OK] Source launcher 1.0.2 validée."
 
       - name: Verify stable manifest over HTTPS
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
           $url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/download/echo-stable/echo-update.json"
           $tmp = Join-Path $env:TEMP "echo-stable-manifest.json"
-          Remove-Item $tmp -Force -ErrorAction SilentlyContinue
 
           Invoke-WebRequest `
             -UseBasicParsing `
@@ -59,21 +56,11 @@ jobs:
               "User-Agent" = "Echo-GitHub-Action-Test"
             }
 
-          if (-not (Test-Path $tmp)) {
-            throw "Manifest stable non téléchargé."
-          }
+          $manifest = Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($manifest.product -ne "echo-desktop") { throw "Produit manifest incorrect." }
+          if (-not $manifest.version) { throw "Version manifest absente." }
 
-          $raw = Get-Content $tmp -Raw -Encoding UTF8
-          $manifest = $raw | ConvertFrom-Json
-
-          if ($manifest.product -ne "echo-desktop") {
-            throw "Produit manifest incorrect."
-          }
-          if (-not $manifest.version) {
-            throw "Version manifest absente."
-          }
-
-          Write-Host "[OK] Canal stable HTTPS/TLS : version $($manifest.version)"
+          Write-Host "[OK] Canal stable : $($manifest.version)"
 
       - name: Compile Echo.exe
         shell: powershell
@@ -104,15 +91,12 @@ jobs:
             /reference:System.IO.Compression.FileSystem.dll `
             launcher\EchoLauncher.cs
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Compilation Echo.exe échouée."
-          }
+          if ($LASTEXITCODE -ne 0) { throw "Compilation Echo.exe échouée." }
 
       - name: Run binary self-test
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
           $exe = (Resolve-Path ".\build\Echo.exe").Path
           $result = Join-Path $env:TEMP "echo-self-test.txt"
           Remove-Item $result -Force -ErrorAction SilentlyContinue
@@ -136,6 +120,7 @@ jobs:
 
       - name: Authenticode signing
         shell: powershell
+        timeout-minutes: 3
         env:
           ECHO_SIGN_PFX_HEX: ${{ secrets.ECHO_SIGN_PFX_HEX }}
           ECHO_SIGN_PFX_PASSWORD: ${{ secrets.ECHO_SIGN_PFX_PASSWORD }}
@@ -149,15 +134,9 @@ jobs:
             throw "Secret ECHO_SIGN_PFX_PASSWORD absent."
           }
 
-          $hex = $env:ECHO_SIGN_PFX_HEX.Trim().TrimStart([char]0xFEFF)
-          $hex = ($hex -replace '\s', '')
-
-          if (($hex.Length % 2) -ne 0) {
-            throw "Secret PFX HEX de longueur impaire."
-          }
-          if ($hex -notmatch '^[0-9A-Fa-f]+$') {
-            throw "Secret PFX HEX contient des caractères invalides."
-          }
+          $hex = ($env:ECHO_SIGN_PFX_HEX.Trim() -replace '\s', '')
+          if (($hex.Length % 2) -ne 0) { throw "HEX impair." }
+          if ($hex -notmatch '^[0-9A-Fa-f]+$') { throw "HEX invalide." }
 
           $bytes = New-Object byte[] ($hex.Length / 2)
           for ($i = 0; $i -lt $hex.Length; $i += 2) {
@@ -166,10 +145,6 @@ jobs:
 
           $pfx = Join-Path $env:TEMP "echo-signing.pfx"
           [IO.File]::WriteAllBytes($pfx, $bytes)
-
-          if ((Get-Item $pfx).Length -lt 500) {
-            throw "PFX reconstruit anormalement petit."
-          }
 
           $securePassword = ConvertTo-SecureString `
             $env:ECHO_SIGN_PFX_PASSWORD `
@@ -199,31 +174,46 @@ jobs:
             Sort-Object FullName -Descending |
             Select-Object -First 1 -ExpandProperty FullName
 
-          if (-not $signtool) {
-            throw "signtool.exe introuvable."
+          if (-not $signtool) { throw "signtool.exe introuvable." }
+
+          # Certificat DEV auto-signé : pas de timestamp distant.
+          # Le précédent run restait bloqué sur le service RFC3161.
+          $arguments = @(
+            "sign",
+            "/fd", "SHA256",
+            "/f", $pfx,
+            "/p", $env:ECHO_SIGN_PFX_PASSWORD,
+            "build\Echo.exe"
+          )
+
+          $proc = Start-Process `
+            -FilePath $signtool `
+            -ArgumentList $arguments `
+            -PassThru `
+            -NoNewWindow
+
+          try {
+            Wait-Process -Id $proc.Id -Timeout 90 -ErrorAction Stop
+          }
+          catch {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+            throw "signtool a dépassé 90 secondes."
           }
 
-          & $signtool sign `
-            /fd SHA256 `
-            /f $pfx `
-            /p $env:ECHO_SIGN_PFX_PASSWORD `
-            /tr https://timestamp.digicert.com `
-            /td SHA256 `
-            build\Echo.exe
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Signature Authenticode échouée (code $LASTEXITCODE)."
+          $proc.Refresh()
+          if ($proc.ExitCode -ne 0) {
+            throw "signtool a échoué (code $($proc.ExitCode))."
           }
 
           $signature = Get-AuthenticodeSignature build\Echo.exe
           if (-not $signature.SignerCertificate) {
-            throw "Echo.exe ne contient pas de certificat signataire."
+            throw "Certificat signataire absent."
           }
           if ($signature.Status -ne "Valid") {
-            throw "Signature Echo.exe non valide sur le runner : $($signature.Status)."
+            throw "Signature non valide : $($signature.Status)."
           }
 
-          Write-Host "[OK] Echo.exe signé."
+          Write-Host "[OK] Echo.exe signé sans timestamp distant."
           Write-Host "[OK] Signer : $($signature.SignerCertificate.Subject)"
           Write-Host "[OK] Thumbprint : $($signature.SignerCertificate.Thumbprint)"
 
@@ -231,14 +221,13 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
           $hash = (Get-FileHash build\Echo.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  Echo.exe" | Set-Content build\Echo.exe.sha256.txt -Encoding ascii
 
           @{
             launcher_version = "1.0.2"
             update_channel = "echo-stable"
-            manifest_url = "https://github.com/jonasriou7-lgtm/echo-releases/releases/download/echo-stable/echo-update.json"
+            signing = "development-self-signed-no-timestamp"
             sha256 = $hash
             built_at = (Get-Date).ToUniversalTime().ToString("o")
           } | ConvertTo-Json | Set-Content build\echo-launcher-info.json -Encoding UTF8
@@ -271,11 +260,9 @@ jobs:
             & gh release create $tag `
               --repo $repo `
               --title "Echo Universal Launcher 1.0.2" `
-              --notes "TLS 1.2 + stable channel + robust binary manifest decoding."
+              --notes "TLS stable channel + development Authenticode signing."
 
-            if ($LASTEXITCODE -ne 0) {
-              throw "Création release launcher échouée."
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Création release échouée." }
           }
 
           & gh release upload $tag `
@@ -285,8 +272,4 @@ jobs:
             --repo $repo `
             --clobber
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Upload Echo.exe échoué."
-          }
-
-          Write-Host "[OK] Echo.exe 1.0.2 publié."
+          if ($LASTEXITCODE -ne 0) { throw "Upload release échoué." }
